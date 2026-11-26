@@ -1,3 +1,6 @@
+# v1.1.2
+- Delete button in the Team Gaming list for levels you're admin of
+
 # v1.1.1
 - PC: your cursor now shows where you last placed or moved a block (mouse tracking didn't work on PC)
 

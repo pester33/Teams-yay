@@ -1818,6 +1818,22 @@ protected:
     std::unordered_map<std::string, int> m_online;
     std::unordered_map<std::string, std::pair<int, int>> m_goalCounts; // done, total
     async::TaskHolder<web::WebResponse> m_goalsTask;
+    async::TaskHolder<web::WebResponse> m_deleteTask;
+
+    void deleteProject(std::string code) {
+        auto self = WeakRef<TeamHubPopup>(this);
+        callRpc(m_deleteTask, "team_admin", matjson::makeObject({
+            { "p_code", code }, { "p_key", ownerKeyFor(code) }, { "p_action", "delete" }, { "p_value", "" },
+        }), [self, code](bool ok, std::string result) {
+            if (!ok || (result != "ok" && result != "missing")) {
+                Notification::create(fmt::format("Couldn't delete: {}", ok ? result : "couldn't reach the server"), NotificationIcon::Error, 3.f)->show();
+                return;
+            }
+            Mod::get()->setSavedValue<std::string>("owner-" + code, "");
+            Notification::create("Team level deleted", NotificationIcon::Success)->show();
+            if (auto popup = self.lock()) popup->load();
+        });
+    }
 
     bool init() {
         if (!Popup::init(W, H)) return false;
@@ -1964,7 +1980,7 @@ protected:
             auto info = CCLabelBMFont::create(sub.c_str(), "chatFont.fnt");
             info->setAnchorPoint({ 0.f, 0.5f });
             info->setPosition({ 10.f, 11.f });
-            info->limitLabelWidth(240.f, 0.45f, 0.2f);
+            info->limitLabelWidth(215.f, 0.45f, 0.2f);
             info->setColor({ 210, 210, 210 });
             row->addChild(info);
 
@@ -1991,6 +2007,20 @@ protected:
             });
             goals->setPosition({ LIST_W - 100.f, ROW_H / 2 });
             menu->addChild(goals);
+            if (!ownerKeyFor(code).empty()) {
+                // the admin can delete it right from the list
+                auto del = CCMenuItemExt::createSpriteExtraWithFrameName("GJ_deleteIcon_001.png", 0.6f, [self, code, name](CCMenuItemSpriteExtra*) {
+                    createQuickPopup("Delete team level",
+                        fmt::format("Delete <cy>{}</c> <cr>for everyone</c>? The saved progress and goals are gone forever. (Your copy in My Levels stays.)", name),
+                        "Cancel", "Delete", [self, code](auto, bool yes) {
+                            auto popup = self.lock();
+                            if (!yes || !popup) return;
+                            popup->deleteProject(code);
+                        });
+                });
+                del->setPosition({ LIST_W - 142.f, ROW_H / 2 });
+                menu->addChild(del);
+            }
             i++;
         }
         m_scroll->moveToTop();
