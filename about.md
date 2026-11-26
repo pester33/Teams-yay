@@ -9,3 +9,9 @@ Team levels for the Gaming team. Build levels together live, and the progress is
 4. Progress saves online by itself. Leaving the editor saves too. In the editor, pause and press **Team** to see who's there, or to save right now.
 
 The team level also appears in My Levels as "TG <name>" (your own copy).
+
+## Goals
+Press **Goals** on a team level (in the list or the editor's Team menu) to write what you want to do, like "decorate part 2". Tick goals off when they're done.
+
+## Admin
+Whoever makes a team level is its admin. In the editor, pause, press **Team**, then **Admin** to rename the level, set a join code, kick or ban people, or delete the level.

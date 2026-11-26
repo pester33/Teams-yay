@@ -182,6 +182,7 @@ public:
         this->scanLocal(editor, true); // give every existing object an id (nothing is sent yet)
 
         auto code = randomString(5, "ABCDEFGHJKLMNPQRSTUVWXYZ23456789");
+        auto ownerKey = randomString(24, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
         std::string levelName = projectName.substr(0, 40);
         auto body = matjson::makeObject({
             { "code", code },
@@ -191,11 +192,12 @@ public:
             { "snapshot_event", 0 },
             { "saved_by", playerName() },
             { "objects", static_cast<int>(m_tracked.size()) },
+            { "owner_key", ownerKey },
         });
         auto req = supa();
         req.header("Prefer", "return=minimal");
         req.bodyJSON(body);
-        m_tasks.spawn(req.post(fmt::format("{}/rest/v1/team_projects", SUPA_URL)), [this, done, attempt, code, projectName](web::WebResponse res) {
+        m_tasks.spawn(req.post(fmt::format("{}/rest/v1/team_projects", SUPA_URL)), [this, done, attempt, code, projectName, ownerKey](web::WebResponse res) {
             if (res.code() == 409 && attempt < 5) {
                 // code already taken, try another
                 if (auto ed = m_editor.lock()) return this->host(ed, projectName, done, attempt + 1);
@@ -207,6 +209,7 @@ public:
             }
             room = code;
             isHost = true;
+            Mod::get()->setSavedValue<std::string>("owner-" + code, ownerKey);
             active = true;
             status = "Project created";
             this->projectName = projectName;
@@ -378,6 +381,7 @@ private:
     async::TaskHolder<web::WebResponse> m_snapTask;
 
     void reset() {
+        m_client = randomString(8, "abcdefghijklmnopqrstuvwxyz0123456789");
         active = false;
         isHost = false;
         room.clear();
@@ -716,7 +720,7 @@ private:
             }
             auto url = fmt::format(
                 "{}/rest/v1/team_members?room=eq.{}&last_seen=gt.{}&select={}&order=name.asc",
-                SUPA_URL, roomCode, isoNow(-20), m_cursorColumns ? "client,name,cursor_x,cursor_y,has_cursor" : "client,name"
+                SUPA_URL, roomCode, isoNow(-20), m_cursorColumns ? "client,name,cursor_x,cursor_y,has_cursor,kicked" : "client,name"
             );
             m_pingTask.spawn(supa().get(url), [this, roomCode](web::WebResponse res) {
                 m_pinging = false;
@@ -727,8 +731,18 @@ private:
                 others.clear();
                 for (auto& m : json) {
                     auto name = m["name"].asString().unwrapOr("?");
-                    members.push_back(name);
                     auto client = m["client"].asString().unwrapOr("");
+                    if (m["kicked"].asBool().unwrapOr(false)) {
+                        if (client == m_client) {
+                            // the admin kicked (or banned) us
+                            log::info("[teams] Kicked from {}", room);
+                            Loader::get()->queueInMainThread([this, roomCode] { if (room == roomCode) this->reset(); });
+                            Notification::create("The admin removed you from this team level", NotificationIcon::Error, 4.f)->show();
+                            return;
+                        }
+                        continue;
+                    }
+                    members.push_back(name);
                     if (client.empty() || client == m_client) continue;
                     Member member;
                     member.client = client;
@@ -1272,6 +1286,505 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// Admin: the person who made a team level has its admin key on their device
+// ---------------------------------------------------------------------------
+
+static std::string ownerKeyFor(std::string const& code) {
+    return Mod::get()->getSavedValue<std::string>("owner-" + code, "");
+}
+
+// Calls a database function (checked on the server, so only the real admin can use admin actions)
+static void callRpc(async::TaskHolder<web::WebResponse>& holder, char const* fn, matjson::Value body, std::function<void(bool, std::string)> done) {
+    auto req = supa();
+    req.bodyJSON(body);
+    holder.spawn(req.post(fmt::format("{}/rest/v1/rpc/{}", SUPA_URL, fn)), [done](web::WebResponse res) {
+        if (!res.ok()) {
+            log::warn("[teams] rpc failed: HTTP {} {}", res.code(), res.string().unwrapOr("").substr(0, 200));
+            return done(false, fmt::format("HTTP {}", res.code()));
+        }
+        auto json = res.json().unwrapOr(matjson::Value());
+        done(true, json.isString() ? json.asString().unwrapOr("") : json.dump(matjson::NO_INDENTATION));
+    });
+}
+
+static void tryOpenProject(std::string code, std::string name, std::string joinCode = "");
+
+class JoinCodePopup : public Popup {
+protected:
+    static constexpr float W = 280.f;
+    static constexpr float H = 160.f;
+    std::string m_code, m_name;
+    TextInput* m_input = nullptr;
+
+    bool init(std::string code, std::string name) {
+        if (!Popup::init(W, H)) return false;
+        m_code = code;
+        m_name = name;
+        this->setTitle("Join Code");
+        addText(m_mainLayer, fmt::format("\"{}\" needs a join code:", name), "chatFont.fnt", 0.55f, { W / 2, H - 50.f })
+            ->limitLabelWidth(W - 30.f, 0.55f, 0.2f);
+        m_input = TextInput::create(180.f, "Code", "bigFont.fnt");
+        m_input->setMaxCharCount(20);
+        m_input->setPosition({ W / 2, H - 82.f });
+        m_mainLayer->addChild(m_input);
+        auto menu = CCMenu::create();
+        menu->setPosition({ 0.f, 0.f });
+        m_mainLayer->addChild(menu);
+        auto join = textButton("Join", "GJ_button_02.png", 0.7f, [this] {
+            std::string entered = m_input->getString();
+            auto code = m_code, name = m_name;
+            this->onClose(nullptr);
+            tryOpenProject(code, name, entered);
+        });
+        join->setPosition({ W / 2, 30.f });
+        menu->addChild(join);
+        return true;
+    }
+
+public:
+    static JoinCodePopup* create(std::string code, std::string name) {
+        auto ret = new JoinCodePopup();
+        if (ret->init(code, name)) { ret->autorelease(); return ret; }
+        delete ret;
+        return nullptr;
+    }
+};
+
+static async::TaskHolder<web::WebResponse> s_checkTask;
+
+// Asks the server if we may open this level (not banned, right join code), then opens it
+static void tryOpenProject(std::string code, std::string name, std::string joinCode) {
+    if (!isOnTeam()) {
+        Notification::create("Only Gaming team members can open team levels", NotificationIcon::Warning, 3.f)->show();
+        return;
+    }
+    if (!ownerKeyFor(code).empty()) return openTeamLevel(PendingAction::Join, code, name); // the admin
+    if (joinCode.empty()) joinCode = Mod::get()->getSavedValue<std::string>("joincode-" + code, "");
+    Notification::create("Checking...", NotificationIcon::Loading, 0.6f)->show();
+    callRpc(s_checkTask, "team_check", matjson::makeObject({
+        { "p_code", code }, { "p_name", playerName() }, { "p_join_code", joinCode },
+    }), [code, name, joinCode](bool ok, std::string result) {
+        if (!ok) {
+            // the check isn't set up on the database yet: don't block the team
+            return openTeamLevel(PendingAction::Join, code, name);
+        }
+        if (result == "ok") {
+            if (!joinCode.empty()) Mod::get()->setSavedValue<std::string>("joincode-" + code, joinCode);
+            return openTeamLevel(PendingAction::Join, code, name);
+        }
+        if (result == "banned") {
+            Notification::create("You're banned from this team level", NotificationIcon::Error, 3.f)->show();
+        } else if (result == "code" || result == "wrong") {
+            if (result == "wrong") Notification::create("Wrong join code", NotificationIcon::Error, 2.f)->show();
+            Mod::get()->setSavedValue<std::string>("joincode-" + code, "");
+            if (auto p = JoinCodePopup::create(code, name)) p->show();
+        } else if (result == "missing") {
+            Notification::create("That team level was deleted", NotificationIcon::Warning, 3.f)->show();
+        } else {
+            Notification::create(fmt::format("Can't open: {}", result), NotificationIcon::Error, 3.f)->show();
+        }
+    });
+}
+
+class TeamAdminPopup : public Popup {
+protected:
+    static constexpr float W = 400.f;
+    static constexpr float H = 285.f;
+    std::string m_code;
+    std::string m_key;
+    std::string m_joinCode;
+    std::vector<std::string> m_banned;
+    bool m_infoLoaded = false;
+    CCNode* m_content = nullptr;
+    TextInput* m_nameInput = nullptr;
+    TextInput* m_codeInput = nullptr;
+    async::TaskHolder<web::WebResponse> m_infoTask;
+    async::TaskHolder<web::WebResponse> m_actionTask;
+
+    bool init(std::string code) {
+        if (!Popup::init(W, H)) return false;
+        m_code = code;
+        m_key = ownerKeyFor(code);
+        this->setTitle("Admin Panel");
+
+        // these two keep what you typed when the list below refreshes
+        addText(m_mainLayer, "Level name", "goldFont.fnt", 0.5f, { 60.f, H - 55.f });
+        m_nameInput = TextInput::create(170.f, "Name", "bigFont.fnt");
+        m_nameInput->setFilter("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_!?.'&");
+        m_nameInput->setMaxCharCount(24);
+        m_nameInput->setString(CollabSession::get().projectName);
+        m_nameInput->setPosition({ 200.f, H - 55.f });
+        m_mainLayer->addChild(m_nameInput);
+
+        addText(m_mainLayer, "Join code", "goldFont.fnt", 0.5f, { 60.f, H - 88.f });
+        m_codeInput = TextInput::create(120.f, "none", "bigFont.fnt");
+        m_codeInput->setMaxCharCount(20);
+        m_codeInput->setPosition({ 175.f, H - 88.f });
+        m_mainLayer->addChild(m_codeInput);
+
+        auto menu = CCMenu::create();
+        menu->setPosition({ 0.f, 0.f });
+        m_mainLayer->addChild(menu);
+        auto rename = textButton("Rename", "GJ_button_01.png", 0.5f, [this] {
+            std::string name = utils::string::trim(std::string(m_nameInput->getString()));
+            if (name.empty()) return;
+            this->action("rename", name, [name](std::string) {
+                CollabSession::get().projectName = name;
+                Notification::create("Level renamed", NotificationIcon::Success)->show();
+            });
+        });
+        rename->setPosition({ 335.f, H - 55.f });
+        menu->addChild(rename);
+        auto setCode = textButton("Set", "GJ_button_01.png", 0.5f, [this] {
+            std::string code = m_codeInput->getString();
+            if (code.empty()) return;
+            this->action("set_code", code, [this, code](std::string) {
+                m_joinCode = code;
+                Notification::create("Join code set: people need it to open this level", NotificationIcon::Success, 3.f)->show();
+            });
+        });
+        setCode->setPosition({ 275.f, H - 88.f });
+        menu->addChild(setCode);
+        auto clearCode = textButton("Remove", "GJ_button_06.png", 0.5f, [this] {
+            this->action("set_code", "", [this](std::string) {
+                m_joinCode.clear();
+                m_codeInput->setString("");
+                Notification::create("Join code removed", NotificationIcon::Success)->show();
+            });
+        });
+        clearCode->setPosition({ 340.f, H - 88.f });
+        menu->addChild(clearCode);
+
+        auto del = textButton("Delete level", "GJ_button_06.png", 0.5f, [this] {
+            auto self = WeakRef<TeamAdminPopup>(this);
+            createQuickPopup("Delete team level",
+                "Delete this team level <cr>for everyone</c>? The saved progress is gone forever. (Your copy in My Levels stays.)",
+                "Cancel", "Delete", [self](auto, bool yes) {
+                    auto popup = self.lock();
+                    if (!yes || !popup) return;
+                    popup->action("delete", "", [self](std::string) {
+                        CollabSession::get().leave();
+                        Notification::create("Team level deleted", NotificationIcon::Success)->show();
+                        if (auto p = self.lock()) p->onClose(nullptr);
+                    });
+                });
+        });
+        del->setPosition({ W - 55.f, 22.f });
+        menu->addChild(del);
+
+        this->rebuild();
+        this->loadInfo();
+        this->schedule(schedule_selector(TeamAdminPopup::refresh), 2.f);
+        return true;
+    }
+
+    void refresh(float) { this->rebuild(); }
+
+    void loadInfo() {
+        auto self = WeakRef<TeamAdminPopup>(this);
+        callRpc(m_infoTask, "team_admin", matjson::makeObject({
+            { "p_code", m_code }, { "p_key", m_key }, { "p_action", "info" }, { "p_value", "" },
+        }), [self](bool ok, std::string result) {
+            auto popup = self.lock();
+            if (!popup) return;
+            if (!ok) {
+                Notification::create("Admin isn't set up on the database yet (run sql/admin.sql)", NotificationIcon::Error, 4.f)->show();
+                return;
+            }
+            if (result == "denied") {
+                Notification::create("You're not the admin of this level", NotificationIcon::Error, 3.f)->show();
+                return;
+            }
+            auto json = matjson::parse(result).unwrapOr(matjson::Value());
+            popup->m_joinCode = json["code"].asString().unwrapOr("");
+            popup->m_banned.clear();
+            if (json["banned"].isArray()) for (auto& b : json["banned"]) popup->m_banned.push_back(b.asString().unwrapOr(""));
+            if (!popup->m_infoLoaded) popup->m_codeInput->setString(popup->m_joinCode);
+            popup->m_infoLoaded = true;
+            popup->rebuild();
+        });
+    }
+
+    void action(std::string act, std::string value, std::function<void(std::string)> onOk) {
+        auto self = WeakRef<TeamAdminPopup>(this);
+        callRpc(m_actionTask, "team_admin", matjson::makeObject({
+            { "p_code", m_code }, { "p_key", m_key }, { "p_action", act }, { "p_value", value },
+        }), [self, onOk](bool ok, std::string result) {
+            if (!ok || result != "ok") {
+                Notification::create(fmt::format("Didn't work: {}", ok ? result : "couldn't reach the server"), NotificationIcon::Error, 3.f)->show();
+                return;
+            }
+            onOk(result);
+            if (auto popup = self.lock()) popup->loadInfo();
+        });
+    }
+
+    void rebuild() {
+        if (m_content) m_content->removeFromParent();
+        m_content = CCNode::create();
+        m_mainLayer->addChild(m_content);
+        auto menu = CCMenu::create();
+        menu->setPosition({ 0.f, 0.f });
+        m_content->addChild(menu);
+        auto& s = CollabSession::get();
+
+        // people here right now
+        addText(m_content, "Here now", "goldFont.fnt", 0.5f, { 100.f, H - 120.f });
+        float y = H - 140.f;
+        int shown = 0;
+        for (auto& m : s.others) {
+            if (shown >= 5) break;
+            auto lbl = addText(m_content, m.name, "chatFont.fnt", 0.5f, { 20.f, y }, m.color);
+            lbl->setAnchorPoint({ 0.f, 0.5f });
+            lbl->limitLabelWidth(80.f, 0.5f, 0.2f);
+            auto client = m.client, name = m.name;
+            auto kick = textButton("Kick", "GJ_button_04.png", 0.4f, [this, client, name] {
+                this->action("kick", client, [name](std::string) {
+                    Notification::create(fmt::format("Kicked {}", name), NotificationIcon::Success)->show();
+                });
+            });
+            kick->setPosition({ 130.f, y });
+            menu->addChild(kick);
+            auto ban = textButton("Ban", "GJ_button_06.png", 0.4f, [this, name] {
+                this->action("ban", name, [name](std::string) {
+                    Notification::create(fmt::format("Banned {}", name), NotificationIcon::Success)->show();
+                });
+            });
+            ban->setPosition({ 175.f, y });
+            menu->addChild(ban);
+            y -= 22.f;
+            shown++;
+        }
+        if (shown == 0) addText(m_content, "Nobody else right now", "chatFont.fnt", 0.45f, { 100.f, y }, { 180, 180, 180 });
+
+        // banned list
+        addText(m_content, "Banned", "goldFont.fnt", 0.5f, { 300.f, H - 120.f });
+        y = H - 140.f;
+        shown = 0;
+        for (auto& name : m_banned) {
+            if (shown >= 5) break;
+            auto lbl = addText(m_content, name, "chatFont.fnt", 0.5f, { 225.f, y }, { 255, 140, 140 });
+            lbl->setAnchorPoint({ 0.f, 0.5f });
+            lbl->limitLabelWidth(90.f, 0.5f, 0.2f);
+            auto unban = textButton("Unban", "GJ_button_01.png", 0.4f, [this, name] {
+                this->action("unban", name, [name](std::string) {
+                    Notification::create(fmt::format("Unbanned {}", name), NotificationIcon::Success)->show();
+                });
+            });
+            unban->setPosition({ 350.f, y });
+            menu->addChild(unban);
+            y -= 22.f;
+            shown++;
+        }
+        if (m_banned.size() > 5) addText(m_content, fmt::format("+{} more", m_banned.size() - 5), "chatFont.fnt", 0.4f, { 300.f, y }, { 180, 180, 180 });
+        if (m_banned.empty()) addText(m_content, m_infoLoaded ? "Nobody" : "Loading...", "chatFont.fnt", 0.45f, { 300.f, y }, { 180, 180, 180 });
+
+        addText(m_content, m_joinCode.empty() ? "No join code: any team member can open it" : "Join code is on: people need it to open this level",
+            "chatFont.fnt", 0.42f, { W / 2 - 40.f, 22.f }, { 200, 200, 200 });
+    }
+
+public:
+    static TeamAdminPopup* create(std::string code) {
+        auto ret = new TeamAdminPopup();
+        if (ret->init(code)) { ret->autorelease(); return ret; }
+        delete ret;
+        return nullptr;
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Goals: what everyone wants to do on a team level
+// ---------------------------------------------------------------------------
+
+class GoalsPopup : public Popup {
+protected:
+    static constexpr float W = 400.f;
+    static constexpr float H = 280.f;
+    static constexpr float LIST_W = 360.f;
+    static constexpr float LIST_H = 160.f;
+    static constexpr float ROW_H = 34.f;
+
+    std::string m_code;
+    std::string m_name;
+    matjson::Value m_goals;
+    ScrollLayer* m_scroll = nullptr;
+    CCLabelBMFont* m_info = nullptr;
+    TextInput* m_input = nullptr;
+    async::TaskHolder<web::WebResponse> m_loadTask;
+    async::TaskHolder<web::WebResponse> m_actionTask;
+
+    bool init(std::string code, std::string name) {
+        if (!Popup::init(W, H)) return false;
+        m_code = code;
+        m_name = name;
+        this->setTitle(fmt::format("Goals: {}", name).c_str());
+
+        auto bg = CCScale9Sprite::create("square02_small.png");
+        bg->setContentSize({ LIST_W, LIST_H });
+        bg->setOpacity(80);
+        bg->setPosition({ W / 2, H - 45.f - LIST_H / 2 });
+        m_mainLayer->addChild(bg);
+
+        m_scroll = ScrollLayer::create({ LIST_W, LIST_H });
+        m_scroll->ignoreAnchorPointForPosition(false);
+        m_scroll->setAnchorPoint({ 0.f, 0.f });
+        m_scroll->setPosition({ (W - LIST_W) / 2, H - 45.f - LIST_H });
+        m_mainLayer->addChild(m_scroll);
+        m_info = addText(m_mainLayer, "Loading goals...", "chatFont.fnt", 0.55f, { W / 2, H - 45.f - LIST_H / 2 });
+
+        m_input = TextInput::create(270.f, "What do you want to do? (e.g. decorate part 2)", "chatFont.fnt");
+        m_input->setMaxCharCount(120);
+        m_input->setFilter(" !#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_`abcdefghijklmnopqrstuvwxyz{|}~\"");
+        m_input->setPosition({ W / 2 - 40.f, 38.f });
+        m_mainLayer->addChild(m_input);
+        auto menu = CCMenu::create();
+        menu->setPosition({ 0.f, 0.f });
+        m_mainLayer->addChild(menu);
+        auto add = textButton("Add", "GJ_button_01.png", 0.6f, [this] { this->addGoal(); });
+        add->setPosition({ W / 2 + 145.f, 38.f });
+        menu->addChild(add);
+
+        this->load();
+        this->schedule(schedule_selector(GoalsPopup::autoRefresh), 5.f);
+        return true;
+    }
+
+    void autoRefresh(float) { this->load(); }
+
+    void load() {
+        auto url = fmt::format("{}/rest/v1/team_goals?room=eq.{}&select=id,author,text,done,done_by&order=id.asc&limit=100", SUPA_URL, m_code);
+        auto self = WeakRef<GoalsPopup>(this);
+        m_loadTask.spawn(supa().get(url), [self](web::WebResponse res) {
+            auto popup = self.lock();
+            if (!popup) return;
+            if (!res.ok()) {
+                popup->m_info->setVisible(true);
+                popup->m_info->setString(res.code() == 404 ? "Goals aren't set up yet (run sql/admin.sql)" : "Couldn't load goals");
+                return;
+            }
+            popup->m_goals = res.json().unwrapOr(matjson::Value());
+            popup->rebuild();
+        });
+    }
+
+    void addGoal() {
+        std::string text = utils::string::trim(std::string(m_input->getString()));
+        if (text.empty()) return;
+        auto req = supa();
+        req.header("Prefer", "return=minimal");
+        req.bodyJSON(matjson::makeObject({ { "room", m_code }, { "author", playerName() }, { "text", text.substr(0, 120) } }));
+        auto self = WeakRef<GoalsPopup>(this);
+        m_actionTask.spawn(req.post(fmt::format("{}/rest/v1/team_goals", SUPA_URL)), [self](web::WebResponse res) {
+            if (!res.ok()) {
+                Notification::create(fmt::format("Couldn't add the goal (HTTP {})", res.code()), NotificationIcon::Error)->show();
+                return;
+            }
+            if (auto popup = self.lock()) {
+                popup->m_input->setString("");
+                popup->load();
+            }
+        });
+    }
+
+    void setDone(int64_t id, bool done) {
+        auto req = supa();
+        req.header("Prefer", "return=minimal");
+        req.bodyJSON(matjson::makeObject({ { "done", done }, { "done_by", done ? playerName() : std::string() } }));
+        auto self = WeakRef<GoalsPopup>(this);
+        m_actionTask.spawn(req.patch(fmt::format("{}/rest/v1/team_goals?id=eq.{}", SUPA_URL, id)), [self](web::WebResponse res) {
+            if (!res.ok()) Notification::create("Couldn't update the goal", NotificationIcon::Error)->show();
+            if (auto popup = self.lock()) popup->load();
+        });
+    }
+
+    void removeGoal(int64_t id) {
+        auto self = WeakRef<GoalsPopup>(this);
+        callRpc(m_actionTask, "team_goal_remove", matjson::makeObject({
+            { "p_id", id }, { "p_name", playerName() }, { "p_key", ownerKeyFor(m_code) },
+        }), [self](bool ok, std::string result) {
+            if (!ok || result != "ok") Notification::create("Only whoever wrote it (or the admin) can remove it", NotificationIcon::Warning)->show();
+            if (auto popup = self.lock()) popup->load();
+        });
+    }
+
+    void rebuild() {
+        auto content = m_scroll->m_contentLayer;
+        content->removeAllChildren();
+        if (!m_goals.isArray()) return;
+        if (m_goals.size() == 0) {
+            m_info->setVisible(true);
+            m_info->setString("No goals yet. Write what you want to do!");
+            return;
+        }
+        m_info->setVisible(false);
+        size_t doneCount = 0;
+        for (auto& g : m_goals) if (g["done"].asBool().unwrapOr(false)) doneCount++;
+        this->setTitle(fmt::format("Goals: {} ({}/{} done)", m_name, doneCount, m_goals.size()).c_str());
+
+        float total = std::max(LIST_H, ROW_H * m_goals.size());
+        content->setContentSize({ LIST_W, total });
+        bool admin = !ownerKeyFor(m_code).empty();
+        auto me = lower(playerName());
+        size_t i = 0;
+        for (auto& g : m_goals) {
+            int64_t id = g["id"].asInt().unwrapOr(0);
+            auto text = g["text"].asString().unwrapOr("");
+            auto author = g["author"].asString().unwrapOr("?");
+            bool done = g["done"].asBool().unwrapOr(false);
+            auto doneBy = g["done_by"].asString().unwrapOr("");
+            float y = total - ROW_H * i - ROW_H / 2;
+
+            auto row = CCNode::create();
+            row->setContentSize({ LIST_W, ROW_H });
+            row->setAnchorPoint({ 0.5f, 0.5f });
+            row->setPosition({ LIST_W / 2, y });
+            content->addChild(row);
+            if (i % 2 == 0) row->addChild(CCLayerColor::create({ 0, 0, 0, 40 }, LIST_W, ROW_H));
+
+            auto menu = CCMenu::create();
+            menu->setPosition({ 0.f, 0.f });
+            row->addChild(menu);
+            auto self = WeakRef<GoalsPopup>(this);
+            auto check = CCMenuItemExt::createSpriteExtraWithFrameName(done ? "GJ_checkOn_001.png" : "GJ_checkOff_001.png", 0.55f,
+                [self, id, done](CCMenuItemSpriteExtra*) { if (auto p = self.lock()) p->setDone(id, !done); });
+            check->setPosition({ 18.f, ROW_H / 2 });
+            menu->addChild(check);
+
+            auto lbl = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
+            lbl->setAnchorPoint({ 0.f, 0.5f });
+            lbl->setPosition({ 36.f, ROW_H - 12.f });
+            lbl->limitLabelWidth(270.f, 0.55f, 0.2f);
+            if (done) lbl->setColor({ 140, 255, 140 });
+            row->addChild(lbl);
+
+            auto who = done ? fmt::format("by {}  |  done by {}", author, doneBy.empty() ? "?" : doneBy) : fmt::format("by {}", author);
+            auto sub = CCLabelBMFont::create(who.c_str(), "chatFont.fnt");
+            sub->setAnchorPoint({ 0.f, 0.5f });
+            sub->setPosition({ 36.f, 9.f });
+            sub->setScale(0.4f);
+            sub->setColor({ 190, 190, 190 });
+            row->addChild(sub);
+
+            if (admin || lower(author) == me) {
+                auto del = CCMenuItemExt::createSpriteExtraWithFrameName("GJ_deleteIcon_001.png", 0.5f,
+                    [self, id](CCMenuItemSpriteExtra*) { if (auto p = self.lock()) p->removeGoal(id); });
+                del->setPosition({ LIST_W - 18.f, ROW_H / 2 });
+                menu->addChild(del);
+            }
+            i++;
+        }
+    }
+
+public:
+    static GoalsPopup* create(std::string code, std::string name) {
+        auto ret = new GoalsPopup();
+        if (ret->init(code, name)) { ret->autorelease(); return ret; }
+        delete ret;
+        return nullptr;
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Team Gaming: the list of the team's levels
 // ---------------------------------------------------------------------------
 
@@ -1289,6 +1802,8 @@ protected:
     async::TaskHolder<web::WebResponse> m_onlineTask;
     matjson::Value m_projects;
     std::unordered_map<std::string, int> m_online;
+    std::unordered_map<std::string, std::pair<int, int>> m_goalCounts; // done, total
+    async::TaskHolder<web::WebResponse> m_goalsTask;
 
     bool init() {
         if (!Popup::init(W, H)) return false;
@@ -1332,7 +1847,7 @@ protected:
     void load() {
         m_info->setVisible(true);
         m_info->setString("Loading team levels...");
-        auto url = fmt::format("{}/rest/v1/team_projects?select=code,level_name,host,saved_by,objects,updated_at&order=updated_at.desc&limit=100", SUPA_URL);
+        auto url = fmt::format("{}/rest/v1/team_projects?select=code,level_name,host,saved_by,objects,updated_at,locked&order=updated_at.desc&limit=100", SUPA_URL);
         auto self = WeakRef<TeamHubPopup>(this);
         m_listTask.spawn(supa().get(url), [self](web::WebResponse res) {
             auto popup = self.lock();
@@ -1344,6 +1859,19 @@ protected:
                 return;
             }
             popup->m_projects = res.json().unwrapOr(matjson::Value());
+            popup->rebuild();
+        });
+        auto goalsUrl = fmt::format("{}/rest/v1/team_goals?select=room,done&limit=5000", SUPA_URL);
+        m_goalsTask.spawn(supa().get(goalsUrl), [self](web::WebResponse res) {
+            auto popup = self.lock();
+            if (!popup || !res.ok()) return;
+            popup->m_goalCounts.clear();
+            auto json = res.json().unwrapOr(matjson::Value());
+            if (json.isArray()) for (auto& g : json) {
+                auto& c = popup->m_goalCounts[g["room"].asString().unwrapOr("")];
+                c.second++;
+                if (g["done"].asBool().unwrapOr(false)) c.first++;
+            }
             popup->rebuild();
         });
         auto onlineUrl = fmt::format("{}/rest/v1/team_members?last_seen=gt.{}&select=room", SUPA_URL, isoNow(-20));
@@ -1394,15 +1922,35 @@ protected:
             auto title = CCLabelBMFont::create(name.c_str(), "goldFont.fnt");
             title->setAnchorPoint({ 0.f, 0.5f });
             title->setPosition({ 10.f, ROW_H - 14.f });
-            title->limitLabelWidth(250.f, 0.6f, 0.2f);
+            title->limitLabelWidth(220.f, 0.6f, 0.2f);
             row->addChild(title);
+            float tagX = 10.f + title->getScaledContentSize().width + 6.f;
+            if (p["locked"].asBool().unwrapOr(false)) {
+                if (auto lock = CCSprite::createWithSpriteFrameName("GJ_lock_001.png")) {
+                    lock->setScale(0.35f);
+                    lock->setPosition({ tagX + 5.f, ROW_H - 14.f });
+                    row->addChild(lock);
+                    tagX += 14.f;
+                }
+            }
+            if (!ownerKeyFor(code).empty()) {
+                auto tag = CCLabelBMFont::create("ADMIN", "bigFont.fnt");
+                tag->setScale(0.3f);
+                tag->setColor({ 255, 200, 60 });
+                tag->setAnchorPoint({ 0.f, 0.5f });
+                tag->setPosition({ tagX, ROW_H - 14.f });
+                row->addChild(tag);
+            }
 
             std::string sub = fmt::format("by {}  |  {} objects  |  saved {}{}", host, objects, updated,
                 savedBy.empty() ? "" : fmt::format(" by {}", savedBy));
+            if (auto it = m_goalCounts.find(code); it != m_goalCounts.end()) {
+                sub += fmt::format("  |  goals {}/{}", it->second.first, it->second.second);
+            }
             auto info = CCLabelBMFont::create(sub.c_str(), "chatFont.fnt");
             info->setAnchorPoint({ 0.f, 0.5f });
             info->setPosition({ 10.f, 11.f });
-            info->limitLabelWidth(260.f, 0.45f, 0.2f);
+            info->limitLabelWidth(240.f, 0.45f, 0.2f);
             info->setColor({ 210, 210, 210 });
             row->addChild(info);
 
@@ -1410,7 +1958,7 @@ protected:
                 auto on = CCLabelBMFont::create(fmt::format("{} online", online).c_str(), "chatFont.fnt");
                 on->setScale(0.45f);
                 on->setColor({ 120, 255, 120 });
-                on->setPosition({ LIST_W - 105.f, ROW_H / 2 });
+                on->setPosition({ LIST_W - 100.f, ROW_H - 7.f });
                 row->addChild(on);
             }
 
@@ -1420,10 +1968,15 @@ protected:
             auto self = WeakRef<TeamHubPopup>(this);
             auto open = textButton("Open", "GJ_button_02.png", 0.55f, [self, code, name] {
                 if (auto popup = self.lock()) popup->onClose(nullptr);
-                openTeamLevel(PendingAction::Join, code, name);
+                tryOpenProject(code, name);
             });
             open->setPosition({ LIST_W - 40.f, ROW_H / 2 });
             menu->addChild(open);
+            auto goals = textButton("Goals", "GJ_button_04.png", 0.45f, [code, name] {
+                if (auto p = GoalsPopup::create(code, name)) p->show();
+            });
+            goals->setPosition({ LIST_W - 100.f, ROW_H / 2 });
+            menu->addChild(goals);
             i++;
         }
         m_scroll->moveToTop();
@@ -1486,20 +2039,33 @@ protected:
         addText(m_content, s.saveText(), "chatFont.fnt", 0.55f, { W / 2, H - 105.f }, { 140, 255, 140 });
         addText(m_content, s.status, "chatFont.fnt", 0.5f, { W / 2, H - 123.f }, { 180, 220, 255 });
 
-        auto save = textButton("Save now", "GJ_button_01.png", 0.65f, [this] {
+        auto save = textButton("Save now", "GJ_button_01.png", 0.55f, [this] {
             if (auto ed = m_editor.lock()) {
                 CollabSession::get().saveNow(ed, false);
                 Notification::create("Saving...", NotificationIcon::Loading, 1.f)->show();
             }
         });
-        save->setPosition({ W / 2 - 65.f, 55.f });
+        save->setPosition({ 50.f, 55.f });
         menu->addChild(save);
-        auto leave = textButton("Stop syncing", "GJ_button_06.png", 0.65f, [this] {
+        auto goals = textButton("Goals", "GJ_button_04.png", 0.55f, [] {
+            auto& s = CollabSession::get();
+            if (auto p = GoalsPopup::create(s.room, s.projectName)) p->show();
+        });
+        goals->setPosition({ 128.f, 55.f });
+        menu->addChild(goals);
+        if (!ownerKeyFor(s.room).empty()) {
+            auto admin = textButton("Admin", "GJ_button_03.png", 0.55f, [] {
+                if (auto p = TeamAdminPopup::create(CollabSession::get().room)) p->show();
+            });
+            admin->setPosition({ 200.f, 55.f });
+            menu->addChild(admin);
+        }
+        auto leave = textButton("Stop", "GJ_button_06.png", 0.55f, [this] {
             if (auto ed = m_editor.lock()) CollabSession::get().saveNow(ed, true);
             CollabSession::get().leave();
             this->rebuild();
         });
-        leave->setPosition({ W / 2 + 75.f, 55.f });
+        leave->setPosition({ 275.f, 55.f });
         menu->addChild(leave);
         addText(m_content, "Progress saves online by itself. Exiting the editor saves too.", "chatFont.fnt", 0.42f, { W / 2, 22.f }, { 200, 200, 200 });
     }
