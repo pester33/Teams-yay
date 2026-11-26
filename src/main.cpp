@@ -169,6 +169,9 @@ public:
     // Our own cursor, sent with every ping
     CCPoint cursor = { 0.f, 0.f };
     bool hasCursor = false;
+    // where we last placed / moved an object (PC shows this as our cursor)
+    CCPoint lastEditPos = { 0.f, 0.f };
+    bool hasEditPos = false;
 
     bool isActiveFor(LevelEditorLayer* editor) const {
         return active && m_editor.lock().data() == editor;
@@ -390,6 +393,7 @@ private:
         highlights.clear();
         feed.clear();
         hasCursor = false;
+        hasEditPos = false;
         m_pinging = false;
         status = "Not in a room";
         m_editor = nullptr;
@@ -438,10 +442,18 @@ private:
                     auto uuid = this->newUuid();
                     m_tracked[obj] = { uuid, str, obj };
                     m_byUuid[uuid] = obj;
-                    if (!silent) ops.push_back(matjson::makeObject({ { "o", "a" }, { "u", uuid }, { "s", str } }));
+                    if (!silent) {
+                        ops.push_back(matjson::makeObject({ { "o", "a" }, { "u", uuid }, { "s", str } }));
+                        lastEditPos = obj->getPosition();
+                        hasEditPos = true;
+                    }
                 } else if (it->second.str != str) {
                     it->second.str = str;
-                    if (!silent) ops.push_back(matjson::makeObject({ { "o", "m" }, { "u", it->second.uuid }, { "s", str } }));
+                    if (!silent) {
+                        ops.push_back(matjson::makeObject({ { "o", "m" }, { "u", it->second.uuid }, { "s", str } }));
+                        lastEditPos = obj->getPosition();
+                        hasEditPos = true;
+                    }
                 }
             }
         }
@@ -951,13 +963,15 @@ public:
         auto& s = CollabSession::get();
         if (!editor->m_objectLayer) return;
 #ifdef GEODE_IS_DESKTOP
-        auto screen = getMousePos();
+        // PC: show where we last placed or moved a block
+        if (!s.hasEditPos) return;
+        s.cursor = s.lastEditPos;
+        s.hasCursor = true;
 #else
         if (!s_touchValid) return;
-        auto screen = s_lastTouch;
-#endif
-        s.cursor = editor->m_objectLayer->convertToNodeSpace(screen);
+        s.cursor = editor->m_objectLayer->convertToNodeSpace(s_lastTouch);
         s.hasCursor = true;
+#endif
     }
 
     void updateFeed(float dt) {

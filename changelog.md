@@ -1,3 +1,6 @@
+# v1.1.1
+- PC: your cursor now shows where you last placed or moved a block (mouse tracking didn't work on PC)
+
 # v1.1.0
 - Admin panel for whoever made the team level: rename it, set a join code, kick, ban / unban, delete
 - Team goals: write what you want to do on a level, tick them off, see who did what
