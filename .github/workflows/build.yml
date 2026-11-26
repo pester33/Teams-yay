@@ -1,0 +1,83 @@
+name: Build Geode Mod
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "data/**"
+      - "sql/**"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+        - name: Windows
+          os: windows-latest
+
+        - name: Android32
+          os: ubuntu-latest
+          target: Android32
+
+        - name: Android64
+          os: ubuntu-latest
+          target: Android64
+
+    name: ${{ matrix.config.name }}
+    runs-on: ${{ matrix.config.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Geode downloads the newest GD bindings by default; pin a known-good version so
+      # upstream changes can't break our builds (bump BINDINGS_COMMIT to update).
+      - name: Use pinned GD bindings
+        shell: bash
+        env:
+          BINDINGS_COMMIT: b1d811b
+        run: |
+          git clone -q --filter=blob:none https://github.com/geode-sdk/bindings "$RUNNER_TEMP/bindings"
+          git -C "$RUNNER_TEMP/bindings" checkout -q "$BINDINGS_COMMIT"
+          echo "GEODE_BINDINGS_REPO_PATH=$RUNNER_TEMP/bindings" >> "$GITHUB_ENV"
+
+      - name: Build the mod
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          combine: true
+          target: ${{ matrix.config.target }}
+
+  package:
+    name: Package builds
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: ['build']
+
+    steps:
+      - uses: geode-sdk/build-geode-mod/combine@main
+        id: build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Build Output
+          path: ${{ steps.build.outputs.build-output }}
+
+      - uses: actions/checkout@v4
+        with:
+          path: src-repo
+
+      - name: Write version.txt (used by the in-game updater)
+        run: jq -r '.version' src-repo/mod.json > "${{ steps.build.outputs.build-output }}/version.txt"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-build-2.2091
+          name: Gaming Teams (GD 2.2091)
+          make_latest: true
+          files: |
+            ${{ steps.build.outputs.build-output }}/*.geode
+            ${{ steps.build.outputs.build-output }}/version.txt

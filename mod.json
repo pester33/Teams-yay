@@ -1,0 +1,36 @@
+{
+	"geode": "6.0.0",
+	"gd": {
+		"win": "2.2091",
+		"android": "2.2091"
+	},
+	"id": "pester.gaming-teams",
+	"name": "Gaming Teams",
+	"version": "v1.0.0",
+	"developer": "Pester",
+	"description": "Team levels for the Gaming team: build together live, and progress is saved online so anyone can continue later.",
+	"tags": [
+		"editor",
+		"online"
+	],
+	"settings": {
+		"sync-interval": {
+			"type": "float",
+			"name": "Sync Speed (seconds)",
+			"description": "How often your edits are sent and the team's edits are pulled in. Lower is faster but uses more internet.",
+			"default": 1.0,
+			"min": 0.5,
+			"max": 5.0,
+			"control": {
+				"slider": true,
+				"slider-step": 0.5
+			}
+		},
+		"check-updates": {
+			"type": "bool",
+			"name": "Check for Updates",
+			"description": "When GD starts, check for a new version of this mod and offer to install it.",
+			"default": true
+		}
+	}
+}

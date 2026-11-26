@@ -1,0 +1,5 @@
+# Gaming Teams: who can open the team's levels.
+# One GD username per line (not case sensitive). Lines starting with # are ignored.
+# A line with just * lets everyone in. Remove the * and add names to make it team-only.
+# Changes here work right away, no mod update needed.
+*
