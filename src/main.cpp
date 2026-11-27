@@ -4,6 +4,7 @@
 #include <Geode/modify/MenuLayer.hpp>
 #include <Geode/modify/EditorUI.hpp>
 #include <Geode/ui/TextInput.hpp>
+#include <Geode/ui/MDPopup.hpp>
 #include <Geode/ui/BasedButtonSprite.hpp>
 #include <Geode/utils/web.hpp>
 #include <Geode/utils/async.hpp>
@@ -1799,6 +1800,57 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// Update log: what changed in each version (from changelog.md)
+// ---------------------------------------------------------------------------
+
+struct ChangelogSection {
+    std::string version;
+    std::string text;
+};
+
+// changelog.md is "# v1.1.2" headers, each followed by "- change" lines
+static std::vector<ChangelogSection> parseChangelog(std::string const& md) {
+    std::vector<ChangelogSection> out;
+    for (auto& line : utils::string::split(md, "\n")) {
+        auto trimmed = utils::string::trim(line);
+        if (trimmed.starts_with("# ")) {
+            out.push_back({ utils::string::trim(trimmed.substr(2)), "" });
+        } else if (!out.empty() && !trimmed.empty()) {
+            out.back().text += trimmed + "\n";
+        }
+    }
+    return out;
+}
+
+static std::string changelogMarkdown(std::vector<ChangelogSection> const& sections) {
+    std::string md;
+    for (auto& sec : sections) md += fmt::format("## {}\n{}\n", sec.version, sec.text);
+    return md.empty() ? std::string("No changes listed.") : md;
+}
+
+static void showUpdateLog() {
+    auto md = Mod::get()->getMetadata().getChangelog().value_or("");
+    MDPopup::create("Update Log", changelogMarkdown(parseChangelog(md)), "OK")->show();
+}
+
+// First time GD starts after an update: show what's new
+static void showWhatsNewOnce() {
+    auto current = Mod::get()->getVersion().toVString();
+    auto seen = Mod::get()->getSavedValue<std::string>("seen-version", "");
+    Mod::get()->setSavedValue<std::string>("seen-version", current);
+    if (seen.empty() || seen == current) return; // fresh install, or nothing new
+    auto sections = parseChangelog(Mod::get()->getMetadata().getChangelog().value_or(""));
+    std::vector<ChangelogSection> fresh;
+    auto seenVer = VersionInfo::parse(seen);
+    for (auto& sec : sections) {
+        auto v = VersionInfo::parse(sec.version);
+        if (!v || !seenVer || v.unwrap() > seenVer.unwrap()) fresh.push_back(sec);
+    }
+    if (fresh.empty()) return;
+    MDPopup::create(fmt::format("What's new in {}", current).c_str(), changelogMarkdown(fresh), "Nice")->show();
+}
+
+// ---------------------------------------------------------------------------
 // Team Gaming: the list of the team's levels
 // ---------------------------------------------------------------------------
 
@@ -1863,11 +1915,14 @@ protected:
             }
             if (auto p = NewTeamLevelPopup::create()) p->show();
         });
-        add->setPosition({ W / 2 - 60.f, 26.f });
+        add->setPosition({ W / 2 - 75.f, 26.f });
         menu->addChild(add);
         auto refresh = textButton("Refresh", "GJ_button_04.png", 0.65f, [this] { this->load(); });
-        refresh->setPosition({ W / 2 + 85.f, 26.f });
+        refresh->setPosition({ W / 2 + 70.f, 26.f });
         menu->addChild(refresh);
+        auto log = textButton("Update log", "GJ_button_05.png", 0.55f, [] { showUpdateLog(); });
+        log->setPosition({ W / 2 + 155.f, 26.f });
+        menu->addChild(log);
 
         loadTeamMembers();
         this->load();
@@ -2195,6 +2250,8 @@ static void installUpdate(std::string version) {
     });
 }
 
+static constexpr auto CHANGELOG_URL = "https://raw.githubusercontent.com/pester33/Teams-yay/main/changelog.md";
+
 static void checkForUpdate(bool isRetry = false) {
     if (s_updateBusy) return;
     s_updateBusy = true;
@@ -2213,10 +2270,24 @@ static void checkForUpdate(bool isRetry = false) {
         auto current = Mod::get()->getVersion();
         if (!(latest.unwrap() > current)) return;
         auto version = latest.unwrap().toVString();
-        whenScreenReady([version, current] {
-            createQuickPopup("Gaming Teams",
-                fmt::format("A new version is out: <cg>{}</c> (you have {}).\nUpdate now?", version, current.toVString()),
-                "Later", "Update", [version](auto, bool update) { if (update) installUpdate(version); });
+        // grab the new version's changelog so the popup can show what's new
+        web::WebRequest logReq;
+        setTimeout(logReq, 15);
+        s_updateTask.spawn(logReq.get(CHANGELOG_URL), [version, current](web::WebResponse logRes) {
+            std::vector<ChangelogSection> fresh;
+            if (logRes.ok()) {
+                for (auto& sec : parseChangelog(logRes.string().unwrapOr(""))) {
+                    auto v = VersionInfo::parse(sec.version);
+                    if (v && v.unwrap() > current) fresh.push_back(sec);
+                }
+            }
+            whenScreenReady([version, current, fresh] {
+                std::string md = fmt::format("A new version is out: **{}** (you have {}).\n\n", version, current.toVString());
+                md += fresh.empty() ? std::string("Update now?") : changelogMarkdown(fresh);
+                MDPopup::create("Update available", md, "Later", "Update", [version](bool update) {
+                    if (update) installUpdate(version);
+                })->show();
+            });
         });
     });
 }
@@ -2246,6 +2317,7 @@ class $modify(CollabMenuLayer, MenuLayer) {
         if (firstTime) {
             firstTime = false;
             if (Mod::get()->getSettingValue<bool>("check-updates")) checkForUpdate();
+            Loader::get()->queueInMainThread([] { showWhatsNewOnce(); });
         }
         return true;
     }

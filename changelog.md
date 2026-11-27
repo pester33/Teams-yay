@@ -1,3 +1,8 @@
+# v1.2.0
+- Update log: press Update log in Team Gaming to see every version's changes
+- After an update, a What's new popup shows what changed
+- The update popup shows what's in the new version before you install it
+
 # v1.1.2
 - Delete button in the Team Gaming list for levels you're admin of
 
