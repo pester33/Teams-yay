@@ -2262,6 +2262,23 @@ public:
     }
 };
 
+// finds GD's "Save and Play" label (by node ID, or by its text if IDs aren't there)
+static ButtonSprite* findSaveAndPlayLabel(CCNode* root) {
+    if (auto old = typeinfo_cast<CCMenuItemSpriteExtra*>(root->getChildByIDRecursive("save-and-play-button"))) {
+        if (auto label = typeinfo_cast<ButtonSprite*>(old->getNormalImage())) return label;
+    }
+    std::function<ButtonSprite*(CCNode*)> search = [&](CCNode* node) -> ButtonSprite* {
+        if (auto bs = typeinfo_cast<ButtonSprite*>(node)) {
+            if (bs->m_label && lower(bs->m_label->getString()) == "save and play") return bs;
+        }
+        for (auto child : CCArrayExt<CCNode*>(node->getChildren())) {
+            if (auto found = search(child)) return found;
+        }
+        return nullptr;
+    };
+    return search(root);
+}
+
 class $modify(TeamPauseLayer, EditorPauseLayer) {
     void customSetup() {
         EditorPauseLayer::customSetup();
@@ -2269,25 +2286,53 @@ class $modify(TeamPauseLayer, EditorPauseLayer) {
         auto winSize = CCDirector::sharedDirector()->getWinSize();
         auto editor = WeakRef<LevelEditorLayer>(m_editorLayer);
         bool teamLevel = m_editorLayer && CollabSession::get().isActiveFor(m_editorLayer);
+
         if (teamLevel) {
-            // don't add or hide anything in GD's menu (other mods like Editor Tab API rely on it):
-            // just rename Save and Play; pressing it runs Playtest (see onSaveAndPlay below)
-            if (auto old = typeinfo_cast<CCMenuItemSpriteExtra*>(this->getChildByIDRecursive("save-and-play-button"))) {
-                if (auto label = typeinfo_cast<ButtonSprite*>(old->getNormalImage())) label->setString("Playtest");
-            }
+            // rename Save and Play a moment later, once GD's buttons have their IDs
+            // (pressing it runs Playtest in team levels, see onSaveAndPlay below)
+            this->runAction(CCSequence::create(
+                CCDelayTime::create(0.f),
+                CallFuncExt::create([this] {
+                    if (auto label = findSaveAndPlayLabel(this)) label->setString("Playtest");
+                }),
+                nullptr
+            ));
         }
-        auto btn = textButton("Team", "GJ_button_02.png", 0.7f, [editor] {
-            if (auto ed = editor.lock()) {
-                if (auto popup = TeamEditorPopup::create(ed)) popup->show();
-            }
-        });
+
+        // our buttons: a row at the bottom, under GD's sliders
         auto menu = CCMenu::create();
         menu->setID("team-menu"_spr);
         menu->setPosition({ 0.f, 0.f });
-        // under where Gaming Teams puts its button, so both mods fit
-        btn->setPosition({ winSize.width - 112.f, winSize.height - 88.f });
-        menu->addChild(btn);
         this->addChild(menu, 100);
+        std::vector<CCMenuItemSpriteExtra*> row;
+        row.push_back(textButton("Team", "GJ_button_02.png", 0.45f, [editor] {
+            if (auto ed = editor.lock()) {
+                if (auto popup = TeamEditorPopup::create(ed)) popup->show();
+            }
+        }));
+        if (teamLevel) {
+            row.push_back(textButton("Playtest", "GJ_button_01.png", 0.45f, [editor] {
+                if (auto ed = editor.lock()) teamPlaytest(ed);
+            }));
+            row.push_back(textButton("Copy to My Levels", "GJ_button_04.png", 0.45f, [editor] {
+                if (auto ed = editor.lock()) copyToMyLevels(ed);
+            }));
+            row.push_back(textButton("Goals", "GJ_button_05.png", 0.45f, [] {
+                auto& s = CollabSession::get();
+                if (auto p = GoalsPopup::create(s.room, s.projectName)) p->show();
+            }));
+        }
+        // lay them out side by side, centered
+        float total = 0.f, gap = 8.f;
+        for (auto b : row) total += b->getScaledContentSize().width;
+        total += gap * (row.size() - 1);
+        float x = winSize.width / 2 - total / 2;
+        for (auto b : row) {
+            float w = b->getScaledContentSize().width;
+            b->setPosition({ x + w / 2, 14.f });
+            menu->addChild(b);
+            x += w + gap;
+        }
     }
 
     // in team levels, Save and Play (loads forever there) becomes Playtest
