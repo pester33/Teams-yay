@@ -1245,7 +1245,18 @@ static void openTeamLevel(PendingAction action, std::string const& code, std::st
     s_pendingAction = action;
     s_pendingCode = code;
     s_pendingName = name;
-    CCDirector::sharedDirector()->replaceScene(CCTransitionFade::create(0.5f, LevelEditorLayer::scene(level, false)));
+    // Open it the same way GD does for your own levels: the level's page first, then Edit.
+    // (Jumping straight into the editor made GD's "Save and Play" load forever.)
+    auto scene = EditLevelLayer::scene(level);
+    if (auto page = scene->getChildByType<EditLevelLayer>(0)) {
+        // press Edit once the page is really on screen (actions only run then)
+        page->runAction(CCSequence::create(
+            CCDelayTime::create(0.15f),
+            CallFuncExt::create([page] { page->onEdit(nullptr); }),
+            nullptr
+        ));
+    }
+    CCDirector::sharedDirector()->replaceScene(scene);
 }
 
 // small helpers shared by the popups

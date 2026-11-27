@@ -1,3 +1,6 @@
+# v1.2.2
+- Fixed Save and Play loading forever on team levels: team levels now open through the level page like your own levels
+
 # v1.2.1
 - Leaving the editor of a team level no longer does its saving in the middle of GD switching screens (trying to fix the endless loading screen)
 
