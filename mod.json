@@ -2,11 +2,12 @@
 	"geode": "6.0.0",
 	"gd": {
 		"win": "2.2091",
-		"android": "2.2091"
+		"android": "2.2091",
+		"ios": "2.2091"
 	},
 	"id": "pester.gaming-teams",
 	"name": "Gaming Teams",
-	"version": "v1.3.5",
+	"version": "v1.3.6",
 	"developer": "Pester",
 	"description": "Team levels for the Gaming team: build together live, and progress is saved online so anyone can continue later.",
 	"tags": [

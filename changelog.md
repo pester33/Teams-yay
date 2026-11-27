@@ -1,3 +1,6 @@
+# v1.3.6
+- iOS support
+
 # v1.3.5
 - Pause menu: Team, Playtest, Copy to My Levels and Goals are now a row at the bottom
 - Fixed Save and Play not being renamed to Playtest in team levels
