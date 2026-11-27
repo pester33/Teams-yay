@@ -88,6 +88,9 @@ static ccColor3B colorForClient(std::string const& client) {
 // ----- Color channels (BG, Ground, 1-999...) live in the level settings string under kS38
 // kS38 looks like "1_255_2_0_3_0_6_1000_7_1|1_0_2_102_3_255_6_1001_7_1|..."
 static std::string levelColorString(LevelEditorLayer* editor) {
+#ifdef GEODE_IS_IOS
+    return ""; // GD's level settings can't be read on iOS yet, so colors don't sync there
+#endif
     if (!editor->m_levelSettings) return "";
     std::string header = editor->m_levelSettings->getSaveString();
     auto start = header.find("kS38,");
@@ -627,6 +630,9 @@ private:
 
     // Sets color channels from their saved form (same format GD saves levels in)
     void applyColors(LevelEditorLayer* editor, std::vector<std::string> const& entries) {
+#ifdef GEODE_IS_IOS
+        return; // the color functions can't be called on iOS yet
+#else
         if (entries.empty() || !editor->m_levelSettings || !editor->m_levelSettings->m_effectManager) return;
         auto settingsColors = editor->m_levelSettings->m_effectManager;
         for (auto& entry : entries) {
@@ -650,6 +656,7 @@ private:
             int id = colorEntryChannel(entry);
             if (auto it = now.find(id); it != now.end()) m_colors[id] = it->second;
         }
+#endif
     }
 
     void removeTracked(LevelEditorLayer* editor, GameObject* obj) {
@@ -705,8 +712,20 @@ private:
     void clearLevel(LevelEditorLayer* editor) {
         m_tracked.clear();
         m_byUuid.clear();
+#ifdef GEODE_IS_IOS
+        // removeAllObjects can't be called on iOS yet: remove them one by one
+        if (editor->m_objects) {
+            std::vector<Ref<GameObject>> all;
+            for (auto obj : CCArrayExt<GameObject*>(editor->m_objects)) all.push_back(obj);
+            for (auto& obj : all) {
+                if (obj->m_isSelected && editor->m_editorUI) editor->m_editorUI->deselectObject(obj);
+                editor->removeObject(obj, true);
+            }
+        }
+#else
         // GD's own "delete everything": fast, and also clears undo/redo so nothing points at deleted objects
         editor->removeAllObjects();
+#endif
     }
 
     void ping() {

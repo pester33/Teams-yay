@@ -1,3 +1,6 @@
+# v1.3.7
+- iOS (GD 2.2091): builds now. Color channels don't sync on iOS yet
+
 # v1.3.6
 - iOS support
 
