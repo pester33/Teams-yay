@@ -1,3 +1,6 @@
+# v1.2.1
+- Leaving the editor of a team level no longer does its saving in the middle of GD switching screens (trying to fix the endless loading screen)
+
 # v1.2.0
 - Update log: press Update log in Team Gaming to see every version's changes
 - After an update, a What's new popup shows what changed

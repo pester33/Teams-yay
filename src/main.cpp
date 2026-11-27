@@ -1110,12 +1110,21 @@ public:
 
     void onExit() override {
         // leaving the editor (exit, save & play...) ends the session
+        // GD is switching scenes right now, so don't do any work here: save and
+        // leave on the next frame instead (keeping the editor alive until then)
         auto editor = m_editor.lock();
+        log::info("[teams] Editor closing (in a team level: {})", editor && CollabSession::get().isActiveFor(editor));
         if (editor && CollabSession::get().isActiveFor(editor)) {
-            CollabSession::get().saveNow(editor, true); // keep the team's progress
-            CollabSession::get().leave();
+            Ref<LevelEditorLayer> keep = editor;
+            Loader::get()->queueInMainThread([keep] {
+                auto& s = CollabSession::get();
+                if (!s.isActiveFor(keep)) return;
+                log::info("[teams] Saving after leaving the editor");
+                s.saveNow(keep, true); // keep the team's progress
+                s.leave();
+                log::info("[teams] Saved and left");
+            });
         }
-        if (m_overlay) m_overlay->removeFromParent();
         m_cursors.clear();
         m_flashes.clear();
         CCNode::onExit();
