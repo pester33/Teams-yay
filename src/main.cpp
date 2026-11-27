@@ -87,10 +87,74 @@ static ccColor3B colorForClient(std::string const& client) {
 
 // ----- Color channels (BG, Ground, 1-999...) live in the level settings string under kS38
 // kS38 looks like "1_255_2_0_3_0_6_1000_7_1|1_0_2_102_3_255_6_1001_7_1|..."
-static std::string levelColorString(LevelEditorLayer* editor) {
-#ifdef GEODE_IS_IOS
-    return ""; // GD's level settings can't be read on iOS yet, so colors don't sync there
+#if defined(GEODE_IS_IOS) || defined(TEAMS_TEST_IOS_COLORS)
+#define TEAMS_IOS_COLORS 1
+// iOS: GD's color functions can't be called there yet, so read and write the color
+// channels directly, in the same text format GD saves them in (so all platforms match)
+static std::string colorActionString(ColorAction* a, int id) {
+    auto hsv = a->m_copyHSV;
+    return fmt::format("1_{}_2_{}_3_{}_4_{}_5_{}_6_{}_7_{}_8_1_9_{}_10_{}a{}a{}a{}a{}_17_{}",
+        a->m_fromColor.r, a->m_fromColor.g, a->m_fromColor.b, a->m_playerColor, a->m_blending ? 1 : 0, id,
+        a->m_fromOpacity, a->m_copyID, hsv.h, hsv.s, hsv.v, hsv.absoluteSaturation ? 1 : 0, hsv.absoluteBrightness ? 1 : 0,
+        a->m_copyOpacity ? 1 : 0);
+}
+
+static ColorAction* colorActionAt(GJEffectManager* em, int id) {
+    if (!em || id <= 0 || id >= static_cast<int>(em->m_colorActionVector.size())) return nullptr;
+    return em->m_colorActionVector[id];
+}
+
+static void applyColorEntry(ColorAction* a, std::string const& entry) {
+    auto parts = utils::string::split(entry, "_");
+    for (size_t i = 0; i + 1 < parts.size(); i += 2) {
+        int key = utils::numFromString<int>(parts[i]).unwrapOr(-1);
+        auto& val = parts[i + 1];
+        auto asInt = [&] { return utils::numFromString<int>(val).unwrapOr(0); };
+        auto asFloat = [&] { return utils::numFromString<float>(val).unwrapOr(1.f); };
+        switch (key) {
+            case 1: a->m_fromColor.r = static_cast<GLubyte>(asInt()); break;
+            case 2: a->m_fromColor.g = static_cast<GLubyte>(asInt()); break;
+            case 3: a->m_fromColor.b = static_cast<GLubyte>(asInt()); break;
+            case 4: a->m_playerColor = asInt(); break;
+            case 5: a->m_blending = asInt() != 0; break;
+            case 7: a->m_fromOpacity = asFloat(); break;
+            case 9: a->m_copyID = asInt(); break;
+            case 17: a->m_copyOpacity = asInt() != 0; break;
+            case 10: {
+                auto hsv = utils::string::split(val, "a");
+                if (hsv.size() >= 5) {
+                    a->m_copyHSV.h = utils::numFromString<float>(hsv[0]).unwrapOr(0.f);
+                    a->m_copyHSV.s = utils::numFromString<float>(hsv[1]).unwrapOr(1.f);
+                    a->m_copyHSV.v = utils::numFromString<float>(hsv[2]).unwrapOr(1.f);
+                    a->m_copyHSV.absoluteSaturation = hsv[3] == "1";
+                    a->m_copyHSV.absoluteBrightness = hsv[4] == "1";
+                }
+                break;
+            }
+            default: break;
+        }
+    }
+    // a level's colors are still colors, not fades
+    a->m_toColor = a->m_fromColor;
+    a->m_color = a->m_fromColor;
+    a->m_toOpacity = a->m_fromOpacity;
+    a->m_currentOpacity = a->m_fromOpacity;
+}
 #endif
+
+static std::string levelColorString(LevelEditorLayer* editor) {
+#ifdef TEAMS_IOS_COLORS
+    auto em = editor->m_levelSettings ? editor->m_levelSettings->m_effectManager : nullptr;
+    if (!em) return "";
+    std::string out;
+    for (int id = 1; id < static_cast<int>(em->m_colorActionVector.size()); id++) {
+        auto a = em->m_colorActionVector[id];
+        if (!a) continue;
+        if (!out.empty()) out += "|";
+        out += colorActionString(a, id);
+    }
+    return out;
+#else
     if (!editor->m_levelSettings) return "";
     std::string header = editor->m_levelSettings->getSaveString();
     auto start = header.find("kS38,");
@@ -98,6 +162,7 @@ static std::string levelColorString(LevelEditorLayer* editor) {
     start += 5;
     auto end = header.find(',', start);
     return header.substr(start, end == std::string::npos ? std::string::npos : end - start);
+#endif
 }
 
 static int colorEntryChannel(std::string const& entry) {
@@ -630,8 +695,19 @@ private:
 
     // Sets color channels from their saved form (same format GD saves levels in)
     void applyColors(LevelEditorLayer* editor, std::vector<std::string> const& entries) {
-#ifdef GEODE_IS_IOS
-        return; // the color functions can't be called on iOS yet
+#ifdef TEAMS_IOS_COLORS
+        if (entries.empty() || !editor->m_levelSettings) return;
+        // set each channel in the level's colors and in the live editor
+        for (auto& entry : entries) {
+            int id = colorEntryChannel(entry);
+            if (auto a = colorActionAt(editor->m_levelSettings->m_effectManager, id)) applyColorEntry(a, entry);
+            if (auto a = colorActionAt(editor->m_effectManager, id)) applyColorEntry(a, entry);
+        }
+        auto now = splitColors(levelColorString(editor));
+        for (auto& entry : entries) {
+            int id = colorEntryChannel(entry);
+            if (auto it = now.find(id); it != now.end()) m_colors[id] = it->second;
+        }
 #else
         if (entries.empty() || !editor->m_levelSettings || !editor->m_levelSettings->m_effectManager) return;
         auto settingsColors = editor->m_levelSettings->m_effectManager;
