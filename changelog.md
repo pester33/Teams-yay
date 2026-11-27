@@ -1,3 +1,6 @@
+# v1.3.4
+- Cursors and edit flashes no longer live inside GD's object layer (safer with other editor mods like Editor Tab API)
+
 # v1.3.3
 - Fixed old copies of objects staying behind when someone edits them off screen (typing text left h, he, hel, hello)
 

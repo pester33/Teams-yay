@@ -1005,10 +1005,21 @@ public:
             m_flashDraw = CCDrawNode::create();
             m_overlay->addChild(m_flashDraw);
         }
-        if (m_overlay->getParent() != layer) {
+        // Sit NEXT TO the object layer (never inside it: GD and other mods expect only level
+        // objects in there) and copy its camera every frame, so cursors move and zoom with the level.
+        auto parent = layer->getParent();
+        if (!parent) return false;
+        if (m_overlay->getParent() != parent) {
             m_overlay->removeFromParent();
-            layer->addChild(m_overlay, 9999);
+            parent->addChild(m_overlay, layer->getZOrder() + 1);
         }
+        m_overlay->ignoreAnchorPointForPosition(layer->isIgnoreAnchorPointForPosition());
+        m_overlay->setAnchorPoint(layer->getAnchorPoint());
+        m_overlay->setContentSize(layer->getContentSize());
+        m_overlay->setPosition(layer->getPosition());
+        m_overlay->setScaleX(layer->getScaleX());
+        m_overlay->setScaleY(layer->getScaleY());
+        m_overlay->setRotation(layer->getRotation());
         return true;
     }
 
