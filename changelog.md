@@ -1,3 +1,8 @@
+# v1.3.0
+- Test and Play: saves the team level, leaves the editor and plays it (replaces Save and Play in team levels)
+- Copy to My Levels: saves your own normal copy of the team level (not synced)
+- Both are in the Team menu; Test and Play also takes Save and Play's spot in the pause menu
+
 # v1.2.2
 - Fixed Save and Play loading forever on team levels: team levels now open through the level page like your own levels
 

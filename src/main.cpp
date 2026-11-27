@@ -2,6 +2,7 @@
 #include <Geode/modify/LevelEditorLayer.hpp>
 #include <Geode/modify/EditorPauseLayer.hpp>
 #include <Geode/modify/MenuLayer.hpp>
+#include <Geode/modify/EditLevelLayer.hpp>
 #include <Geode/modify/EditorUI.hpp>
 #include <Geode/ui/TextInput.hpp>
 #include <Geode/ui/MDPopup.hpp>
@@ -2111,13 +2112,68 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// Test and Play / Copy to My Levels
+// ---------------------------------------------------------------------------
+
+static bool s_playAfterExit = false;
+static WeakRef<EditorPauseLayer> s_pauseLayer;
+
+// Save the level, leave the editor (the team copy saves online), then press Play on the level's page.
+// Used instead of GD's Save and Play, which loads forever on team levels.
+static void testAndPlay() {
+    auto pause = s_pauseLayer.lock();
+    if (!pause) {
+        Notification::create("Open the pause menu first", NotificationIcon::Warning)->show();
+        return;
+    }
+    s_playAfterExit = true;
+    pause->onSaveAndExit(nullptr);
+}
+
+// A normal level of your own with everything from the team level (not synced)
+static void copyToMyLevels(LevelEditorLayer* editor) {
+    auto& s = CollabSession::get();
+    auto level = GameLevelManager::get()->createNewLevel();
+    if (!level) {
+        Notification::create("Couldn't create a level", NotificationIcon::Error)->show();
+        return;
+    }
+    if (editor->m_level) level->copyLevelInfo(editor->m_level);
+    std::string raw = editor->getLevelString();
+#if GEODE_COMP_GD_VERSION >= 22091
+    level->m_levelString = ZipUtils::compressString(raw, false, -1, 0);
+#else
+    level->m_levelString = ZipUtils::compressString(raw, false, 0);
+#endif
+    std::string name = fmt::format("{} copy", s.projectName.empty() ? std::string("Team level") : s.projectName).substr(0, 20);
+    level->m_levelName = name;
+    Notification::create(fmt::format("Saved \"{}\" in My Levels (your own copy, not synced)", name), NotificationIcon::Success, 3.f)->show();
+}
+
+class $modify(TeamEditLevelLayer, EditLevelLayer) {
+    bool init(GJGameLevel* level) {
+        if (!EditLevelLayer::init(level)) return false;
+        if (s_playAfterExit) {
+            s_playAfterExit = false;
+            // press Play once the page is on screen
+            this->runAction(CCSequence::create(
+                CCDelayTime::create(0.4f),
+                CallFuncExt::create([this] { this->onPlay(nullptr); }),
+                nullptr
+            ));
+        }
+        return true;
+    }
+};
+
+// ---------------------------------------------------------------------------
 // In the editor: pause menu -> Team (who's here, save, leave)
 // ---------------------------------------------------------------------------
 
 class TeamEditorPopup : public Popup {
 protected:
     static constexpr float W = 330.f;
-    static constexpr float H = 220.f;
+    static constexpr float H = 250.f;
     WeakRef<LevelEditorLayer> m_editor;
     CCNode* m_content = nullptr;
 
@@ -2157,6 +2213,15 @@ protected:
             ->limitLabelWidth(W - 40.f, 0.55f, 0.2f);
         addText(m_content, s.saveText(), "chatFont.fnt", 0.55f, { W / 2, H - 105.f }, { 140, 255, 140 });
         addText(m_content, s.status, "chatFont.fnt", 0.5f, { W / 2, H - 123.f }, { 180, 220, 255 });
+
+        auto play = textButton("Test and Play", "GJ_button_01.png", 0.55f, [] { testAndPlay(); });
+        play->setPosition({ W / 2 - 75.f, 90.f });
+        menu->addChild(play);
+        auto copy = textButton("Copy to My Levels", "GJ_button_04.png", 0.55f, [this] {
+            if (auto ed = m_editor.lock()) copyToMyLevels(ed);
+        });
+        copy->setPosition({ W / 2 + 70.f, 90.f });
+        menu->addChild(copy);
 
         auto save = textButton("Save now", "GJ_button_01.png", 0.55f, [this] {
             if (auto ed = m_editor.lock()) {
@@ -2201,8 +2266,26 @@ public:
 class $modify(TeamPauseLayer, EditorPauseLayer) {
     void customSetup() {
         EditorPauseLayer::customSetup();
+        s_pauseLayer = this;
         auto winSize = CCDirector::sharedDirector()->getWinSize();
         auto editor = WeakRef<LevelEditorLayer>(m_editorLayer);
+        bool teamLevel = m_editorLayer && CollabSession::get().isActiveFor(m_editorLayer);
+        bool swapped = false;
+        if (teamLevel) {
+            // GD's Save and Play loads forever on team levels, so put Test and Play in its place
+            if (auto old = typeinfo_cast<CCMenuItemSpriteExtra*>(this->getChildByIDRecursive("save-and-play-button"))) {
+                auto size = old->getContentSize();
+                auto spr = ButtonSprite::create("Test and Play", static_cast<int>(size.width), true, "goldFont.fnt", "GJ_button_01.png", size.height, 0.8f);
+                auto play = CCMenuItemExt::createSpriteExtra(spr, [](CCMenuItemSpriteExtra*) { testAndPlay(); });
+                play->setID("test-and-play-button"_spr);
+                play->setPosition(old->getPosition());
+                play->setScale(old->getScale());
+                old->setVisible(false);
+                old->setEnabled(false);
+                if (auto parent = old->getParent()) parent->addChild(play);
+                swapped = true;
+            }
+        }
         auto btn = textButton("Team", "GJ_button_02.png", 0.7f, [editor] {
             if (auto ed = editor.lock()) {
                 if (auto popup = TeamEditorPopup::create(ed)) popup->show();
@@ -2214,6 +2297,12 @@ class $modify(TeamPauseLayer, EditorPauseLayer) {
         // under where Gaming Teams puts its button, so both mods fit
         btn->setPosition({ winSize.width - 112.f, winSize.height - 88.f });
         menu->addChild(btn);
+        if (teamLevel && !swapped) {
+            // couldn't find GD's Save and Play button: put Test and Play under Team
+            auto play = textButton("Test and Play", "GJ_button_01.png", 0.6f, [] { testAndPlay(); });
+            play->setPosition({ winSize.width - 112.f, winSize.height - 120.f });
+            menu->addChild(play);
+        }
         this->addChild(menu, 100);
     }
 };
