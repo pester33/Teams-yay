@@ -2,7 +2,6 @@
 #include <Geode/modify/LevelEditorLayer.hpp>
 #include <Geode/modify/EditorPauseLayer.hpp>
 #include <Geode/modify/MenuLayer.hpp>
-#include <Geode/modify/EditLevelLayer.hpp>
 #include <Geode/modify/EditorUI.hpp>
 #include <Geode/ui/TextInput.hpp>
 #include <Geode/ui/MDPopup.hpp>
@@ -2115,19 +2114,18 @@ public:
 // Test and Play / Copy to My Levels
 // ---------------------------------------------------------------------------
 
-static bool s_playAfterExit = false;
 static WeakRef<EditorPauseLayer> s_pauseLayer;
 
-// Save the level, leave the editor (the team copy saves online), then press Play on the level's page.
-// Used instead of GD's Save and Play, which loads forever on team levels.
-static void testAndPlay() {
-    auto pause = s_pauseLayer.lock();
-    if (!pause) {
-        Notification::create("Open the pause menu first", NotificationIcon::Warning)->show();
-        return;
-    }
-    s_playAfterExit = true;
-    pause->onSaveAndExit(nullptr);
+// Saves the team level online, closes the pause menu and starts GD's playtest right in the editor.
+// (Leaving the editor to play, like Save and Play does, loads forever on team levels.)
+static void teamPlaytest(LevelEditorLayer* editor) {
+    if (!editor) return;
+    CollabSession::get().saveNow(editor, false);
+    if (auto pause = s_pauseLayer.lock()) pause->onResume(nullptr);
+    Ref<LevelEditorLayer> keep = editor;
+    Loader::get()->queueInMainThread([keep] {
+        if (keep->m_editorUI) keep->m_editorUI->onPlaytest(nullptr);
+    });
 }
 
 // A normal level of your own with everything from the team level (not synced)
@@ -2150,21 +2148,6 @@ static void copyToMyLevels(LevelEditorLayer* editor) {
     Notification::create(fmt::format("Saved \"{}\" in My Levels (your own copy, not synced)", name), NotificationIcon::Success, 3.f)->show();
 }
 
-class $modify(TeamEditLevelLayer, EditLevelLayer) {
-    bool init(GJGameLevel* level) {
-        if (!EditLevelLayer::init(level)) return false;
-        if (s_playAfterExit) {
-            s_playAfterExit = false;
-            // press Play once the page is on screen
-            this->runAction(CCSequence::create(
-                CCDelayTime::create(0.4f),
-                CallFuncExt::create([this] { this->onPlay(nullptr); }),
-                nullptr
-            ));
-        }
-        return true;
-    }
-};
 
 // ---------------------------------------------------------------------------
 // In the editor: pause menu -> Team (who's here, save, leave)
@@ -2214,7 +2197,11 @@ protected:
         addText(m_content, s.saveText(), "chatFont.fnt", 0.55f, { W / 2, H - 105.f }, { 140, 255, 140 });
         addText(m_content, s.status, "chatFont.fnt", 0.5f, { W / 2, H - 123.f }, { 180, 220, 255 });
 
-        auto play = textButton("Test and Play", "GJ_button_01.png", 0.55f, [] { testAndPlay(); });
+        auto play = textButton("Playtest", "GJ_button_01.png", 0.55f, [this] {
+            auto ed = m_editor.lock();
+            this->onClose(nullptr);
+            teamPlaytest(ed);
+        });
         play->setPosition({ W / 2 - 75.f, 90.f });
         menu->addChild(play);
         auto copy = textButton("Copy to My Levels", "GJ_button_04.png", 0.55f, [this] {
@@ -2272,9 +2259,9 @@ class $modify(TeamPauseLayer, EditorPauseLayer) {
         bool teamLevel = m_editorLayer && CollabSession::get().isActiveFor(m_editorLayer);
         if (teamLevel) {
             // don't add or hide anything in GD's menu (other mods like Editor Tab API rely on it):
-            // just rename Save and Play; pressing it runs Test and Play (see onSaveAndPlay below)
+            // just rename Save and Play; pressing it runs Playtest (see onSaveAndPlay below)
             if (auto old = typeinfo_cast<CCMenuItemSpriteExtra*>(this->getChildByIDRecursive("save-and-play-button"))) {
-                if (auto label = typeinfo_cast<ButtonSprite*>(old->getNormalImage())) label->setString("Test and Play");
+                if (auto label = typeinfo_cast<ButtonSprite*>(old->getNormalImage())) label->setString("Playtest");
             }
         }
         auto btn = textButton("Team", "GJ_button_02.png", 0.7f, [editor] {
@@ -2291,10 +2278,10 @@ class $modify(TeamPauseLayer, EditorPauseLayer) {
         this->addChild(menu, 100);
     }
 
-    // in team levels, Save and Play (loads forever there) becomes Test and Play
+    // in team levels, Save and Play (loads forever there) becomes Playtest
     void onSaveAndPlay(CCObject* sender) {
         if (m_editorLayer && CollabSession::get().isActiveFor(m_editorLayer)) {
-            testAndPlay();
+            teamPlaytest(m_editorLayer);
             return;
         }
         EditorPauseLayer::onSaveAndPlay(sender);

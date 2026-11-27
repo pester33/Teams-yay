@@ -1,3 +1,6 @@
+# v1.3.2
+- Test and Play is now Playtest: it saves the team level online and starts the playtest right in the editor (no more leaving the editor and loading forever)
+
 # v1.3.1
 - Fixed a crash with Editor Tab API when pausing: the pause menu is no longer changed, Save and Play is just renamed to Test and Play in team levels
 
