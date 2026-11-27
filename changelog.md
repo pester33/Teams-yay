@@ -1,3 +1,6 @@
+# v1.3.1
+- Fixed a crash with Editor Tab API when pausing: the pause menu is no longer changed, Save and Play is just renamed to Test and Play in team levels
+
 # v1.3.0
 - Test and Play: saves the team level, leaves the editor and plays it (replaces Save and Play in team levels)
 - Copy to My Levels: saves your own normal copy of the team level (not synced)

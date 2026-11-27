@@ -2270,20 +2270,11 @@ class $modify(TeamPauseLayer, EditorPauseLayer) {
         auto winSize = CCDirector::sharedDirector()->getWinSize();
         auto editor = WeakRef<LevelEditorLayer>(m_editorLayer);
         bool teamLevel = m_editorLayer && CollabSession::get().isActiveFor(m_editorLayer);
-        bool swapped = false;
         if (teamLevel) {
-            // GD's Save and Play loads forever on team levels, so put Test and Play in its place
+            // don't add or hide anything in GD's menu (other mods like Editor Tab API rely on it):
+            // just rename Save and Play; pressing it runs Test and Play (see onSaveAndPlay below)
             if (auto old = typeinfo_cast<CCMenuItemSpriteExtra*>(this->getChildByIDRecursive("save-and-play-button"))) {
-                auto size = old->getContentSize();
-                auto spr = ButtonSprite::create("Test and Play", static_cast<int>(size.width), true, "goldFont.fnt", "GJ_button_01.png", size.height, 0.8f);
-                auto play = CCMenuItemExt::createSpriteExtra(spr, [](CCMenuItemSpriteExtra*) { testAndPlay(); });
-                play->setID("test-and-play-button"_spr);
-                play->setPosition(old->getPosition());
-                play->setScale(old->getScale());
-                old->setVisible(false);
-                old->setEnabled(false);
-                if (auto parent = old->getParent()) parent->addChild(play);
-                swapped = true;
+                if (auto label = typeinfo_cast<ButtonSprite*>(old->getNormalImage())) label->setString("Test and Play");
             }
         }
         auto btn = textButton("Team", "GJ_button_02.png", 0.7f, [editor] {
@@ -2297,13 +2288,16 @@ class $modify(TeamPauseLayer, EditorPauseLayer) {
         // under where Gaming Teams puts its button, so both mods fit
         btn->setPosition({ winSize.width - 112.f, winSize.height - 88.f });
         menu->addChild(btn);
-        if (teamLevel && !swapped) {
-            // couldn't find GD's Save and Play button: put Test and Play under Team
-            auto play = textButton("Test and Play", "GJ_button_01.png", 0.6f, [] { testAndPlay(); });
-            play->setPosition({ winSize.width - 112.f, winSize.height - 120.f });
-            menu->addChild(play);
-        }
         this->addChild(menu, 100);
+    }
+
+    // in team levels, Save and Play (loads forever there) becomes Test and Play
+    void onSaveAndPlay(CCObject* sender) {
+        if (m_editorLayer && CollabSession::get().isActiveFor(m_editorLayer)) {
+            testAndPlay();
+            return;
+        }
+        EditorPauseLayer::onSaveAndPlay(sender);
     }
 };
 
