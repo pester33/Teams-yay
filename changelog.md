@@ -1,3 +1,6 @@
+# v1.3.3
+- Fixed old copies of objects staying behind when someone edits them off screen (typing text left h, he, hel, hello)
+
 # v1.3.2
 - Test and Play is now Playtest: it saves the team level online and starts the playtest right in the editor (no more leaving the editor and loading forever)
 

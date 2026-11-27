@@ -658,8 +658,9 @@ private:
             m_byUuid.erase(it->second.uuid);
             m_tracked.erase(it);
         }
-        // the player may have deleted it already
-        if (!obj->getParent()) return;
+        // the player may have deleted it already. (Don't check getParent(): GD unloads objects
+        // that are off screen, and skipping those left old copies behind, like "h", "he", "hel"...)
+        if (!editor->m_objects || !editor->m_objects->containsObject(obj)) return;
         if (obj->m_isSelected && editor->m_editorUI) editor->m_editorUI->deselectObject(obj);
         editor->removeObject(obj, true);
     }
